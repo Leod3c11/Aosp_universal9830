@@ -19,12 +19,17 @@
  */
 
 #include <soc/samsung/cal-if.h>
+#include <soc/samsung/g3d_local_dvfs.h>
+#include "../../../../soc/samsung/cal-if/exynos9830/cmucal-node.h"
 
 #include <gpexbe_devicetree.h>
 
 #include <gpexbe_clock.h>
 #include <gpex_utils.h>
 #include <gpex_debug.h>
+
+extern int cal_clk_setrate(unsigned int vclkid, unsigned long rate);
+extern void cal_dfs_set_volt_margin(unsigned int id, int volt);
 
 struct _clock_backend_info {
 	int boot_clock;
@@ -33,9 +38,13 @@ struct _clock_backend_info {
 
 static struct _clock_backend_info pm_info;
 static unsigned int cal_id;
+static int g3d_local_cached_rate;
 
 int gpexbe_clock_get_level_num(void)
 {
+	if (g3d_local_is_g3d_id(cal_id))
+		return g3d_local_get_level_num();
+
 	return cal_dfs_get_lv_num(cal_id);
 }
 
@@ -44,6 +53,20 @@ int gpexbe_clock_get_rate_asv_table(struct freq_volt *fv_array, int level_num)
 	int i;
 	int ret = 0;
 	struct dvfs_rate_volt rate_volt[48];
+
+	if (g3d_local_is_g3d_id(cal_id)) {
+		int local_lv_num = g3d_local_get_level_num();
+
+		if (level_num > local_lv_num)
+			level_num = local_lv_num;
+
+		for (i = 0; i < level_num; i++) {
+			fv_array[i].freq = g3d_local_get_freq(i);
+			fv_array[i].volt = g3d_local_get_volt(i);
+		}
+
+		return level_num;
+	}
 
 	ret = cal_dfs_get_rate_asv_table(cal_id, rate_volt);
 
@@ -67,9 +90,47 @@ int gpexbe_clock_get_boot_freq(void)
 
 int gpexbe_clock_get_max_freq(void)
 {
+	if (g3d_local_is_g3d_id(cal_id))
+		return G3D_LOCAL_MAX_CLOCK_KHZ;
+
 	return pm_info.max_clock_limit;
 }
 
+static int gpexbe_clock_set_rate_direct_oc(int clk)
+{
+	int ret;
+	unsigned long pll_hz = g3d_local_get_pll_hz(clk);
+	int margin_uv = g3d_local_get_margin_uv(clk);
+
+	if (!pll_hz)
+		return -EINVAL;
+
+	/* 975/949/936 MHz: ACPM base + voltage margin + direct PLL_G3D. */
+	ret = cal_dfs_set_rate(cal_id, G3D_LOCAL_OC_BASE_CLOCK_KHZ);
+	if (ret) {
+		GPU_LOG(MALI_EXYNOS_ERROR,
+			"G3D OC: ACPM base %d KHz failed before %d KHz (ret=%d)\n",
+			G3D_LOCAL_OC_BASE_CLOCK_KHZ, clk, ret);
+		return ret;
+	}
+
+	cal_dfs_set_volt_margin(cal_id, margin_uv);
+
+	ret = cal_clk_setrate(PLL_G3D, pll_hz);
+	if (ret) {
+		GPU_LOG(MALI_EXYNOS_ERROR,
+			"G3D OC: direct PLL_G3D set to %lu Hz for %d KHz failed (ret=%d)\n",
+			pll_hz, clk, ret);
+		return ret;
+	}
+
+	g3d_local_cached_rate = clk;
+	GPU_LOG(MALI_EXYNOS_INFO,
+		"G3D OC: forced PLL_G3D to %lu Hz, reporting %d KHz\n",
+		pll_hz, clk);
+
+	return 0;
+}
 int gpexbe_clock_set_rate(int clk)
 {
 	int ret = 0;
@@ -77,7 +138,16 @@ int gpexbe_clock_set_rate(int clk)
 	gpex_debug_new_record(HIST_CLOCK);
 	gpex_debug_record_prev_data(HIST_CLOCK, gpexbe_clock_get_rate());
 
-	ret = cal_dfs_set_rate(cal_id, clk);
+	if (g3d_local_is_g3d_id(cal_id) && g3d_local_is_oc_freq(clk))
+		ret = gpexbe_clock_set_rate_direct_oc(clk);
+	else
+		ret = cal_dfs_set_rate(cal_id, clk);
+
+	if (!ret && g3d_local_is_g3d_id(cal_id))
+		g3d_local_cached_rate = clk;
+	else if (ret && g3d_local_is_g3d_id(cal_id))
+		GPU_LOG(MALI_EXYNOS_ERROR, "CAL/G3D failed to set local clock %d KHz (ret=%d)\n",
+			clk, ret);
 
 	gpex_debug_record_time(HIST_CLOCK);
 	gpex_debug_record_code(HIST_CLOCK, ret);
@@ -91,6 +161,9 @@ int gpexbe_clock_set_rate(int clk)
 
 int gpexbe_clock_get_rate(void)
 {
+	if (g3d_local_is_g3d_id(cal_id) && g3d_local_is_oc_freq(g3d_local_cached_rate))
+		return g3d_local_cached_rate;
+
 	return cal_dfs_get_rate(cal_id);
 }
 
@@ -103,8 +176,14 @@ int gpexbe_clock_init(void)
 		return -1;
 	}
 
-	pm_info.boot_clock = cal_dfs_get_boot_freq(cal_id);
-	pm_info.max_clock_limit = (int)cal_dfs_get_max_freq(cal_id);
+	if (g3d_local_is_g3d_id(cal_id)) {
+		pm_info.boot_clock = G3D_LOCAL_BOOT_CLOCK_KHZ;
+		pm_info.max_clock_limit = G3D_LOCAL_MAX_CLOCK_KHZ;
+		g3d_local_cached_rate = pm_info.boot_clock;
+	} else {
+		pm_info.boot_clock = cal_dfs_get_boot_freq(cal_id);
+		pm_info.max_clock_limit = (int)cal_dfs_get_max_freq(cal_id);
+	}
 
 	gpex_utils_get_exynos_context()->pm_info = &pm_info;
 
@@ -116,4 +195,5 @@ void gpexbe_clock_term(void)
 	cal_id = 0;
 	pm_info.boot_clock = 0;
 	pm_info.max_clock_limit = 0;
+	g3d_local_cached_rate = 0;
 }
