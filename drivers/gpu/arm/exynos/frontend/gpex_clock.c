@@ -19,6 +19,7 @@
  */
 
 #include <linux/slab.h>
+#include <soc/samsung/g3d_local_dvfs.h>
 
 #include <gpex_clock.h>
 #include <gpex_qos.h>
@@ -88,6 +89,11 @@ static int gpex_clock_update_config_data_from_dt(void)
 	clk_info.boot_clock = gpexbe_clock_get_boot_freq();
 	clk_info.gpu_max_clock_limit = gpexbe_clock_get_max_freq();
 
+	if (clk_info.gpu_max_clock < G3D_LOCAL_MAX_CLOCK_KHZ)
+		clk_info.gpu_max_clock = G3D_LOCAL_MAX_CLOCK_KHZ;
+	if (clk_info.gpu_max_clock_limit < G3D_LOCAL_MAX_CLOCK_KHZ)
+		clk_info.gpu_max_clock_limit = G3D_LOCAL_MAX_CLOCK_KHZ;
+
 	/* TODO: rename the table_size variable to something more sensible like  row_cnt */
 	clk_info.table_size = gpexbe_devicetree_get_int(gpu_dvfs_table_size.row);
 	clk_info.table = kcalloc(clk_info.table_size, sizeof(gpu_clock_info), GFP_KERNEL);
@@ -97,6 +103,15 @@ static int gpex_clock_update_config_data_from_dt(void)
 
 	if (!fv_array)
 		return -ENOMEM;
+
+	{
+		dt_clock_item *dt_clock_table = gpexbe_devicetree_get_clock_table();
+
+		for (j = 0; j < clk_info.table_size; j++) {
+			clk_info.table[j].clock = dt_clock_table[j].clock;
+			clk_info.table[j].voltage = g3d_local_get_volt(j);
+		}
+	}
 
 	ret = gpexbe_clock_get_rate_asv_table(fv_array, asv_lv_num);
 	if (!ret)
