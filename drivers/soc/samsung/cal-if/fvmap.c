@@ -6,6 +6,7 @@
 #include <linux/uaccess.h>
 #include <linux/kobject.h>
 #include <soc/samsung/cal-if.h>
+#include <soc/samsung/g3d_local_dvfs.h>
 
 #include "fvmap.h"
 #include "cmucal.h"
@@ -281,6 +282,12 @@ int fvmap_get_voltage_table(unsigned int id, unsigned int *table)
 
 	if (!IS_ACPM_VCLK(id))
 		return 0;
+
+	if (g3d_local_is_g3d_id(id)) {
+		for (i = 0; i < g3d_local_get_level_num(); i++)
+			table[i] = g3d_local_get_volt(i);
+		return g3d_local_get_level_num();
+	}
 
 	idx = GET_IDX(id);
 
