@@ -2,6 +2,7 @@
 #include <linux/kernel.h>
 #include <linux/io.h>
 #include <soc/samsung/ect_parser.h>
+#include <soc/samsung/g3d_local_dvfs.h>
 
 #include "cmucal.h"
 #include "vclk.h"
@@ -13,6 +14,11 @@
 unsigned int asv_table_ver = 0;
 unsigned int main_rev;
 unsigned int sub_rev;
+
+static bool g3d_local_is_vclk(struct vclk *vclk)
+{
+	return vclk && g3d_local_is_g3d_id(vclk->id);
+}
 
 static struct vclk_lut *get_lut(struct vclk *vclk, unsigned int rate)
 {
@@ -222,6 +228,9 @@ unsigned long vclk_recalc_rate(unsigned int id)
 	if (!vclk)
 		return 0;
 
+	if (g3d_local_is_vclk(vclk) && vclk->vrate == G3D_LOCAL_MAX_CLOCK_KHZ)
+		return G3D_LOCAL_MAX_CLOCK_KHZ;
+
 	if (IS_DFS_VCLK(vclk->id) ||
 	    IS_COMMON_VCLK(vclk->id) ||
 	    IS_ACPM_VCLK(vclk->id)) {
@@ -302,7 +311,9 @@ unsigned int vclk_get_lv_num(unsigned int id)
 
 	vclk = cmucal_get_node(id);
 
-	if (vclk && vclk->lut)
+	if (g3d_local_is_vclk(vclk))
+		lv_num = g3d_local_get_level_num();
+	else if (vclk && vclk->lut)
 		lv_num = vclk->num_rates;
 
 	return lv_num;
@@ -316,7 +327,9 @@ unsigned int vclk_get_max_freq(unsigned int id)
 
 	vclk = cmucal_get_node(id);
 
-	if (vclk && vclk->lut)
+	if (g3d_local_is_vclk(vclk))
+		rate = G3D_LOCAL_MAX_CLOCK_KHZ;
+	else if (vclk && vclk->lut)
 		rate = vclk->max_freq;
 
 	return rate;
@@ -329,7 +342,9 @@ unsigned int vclk_get_min_freq(unsigned int id)
 
 	vclk = cmucal_get_node(id);
 
-	if (vclk && vclk->lut)
+	if (g3d_local_is_vclk(vclk))
+		rate = G3D_LOCAL_MIN_CLOCK_KHZ;
+	else if (vclk && vclk->lut)
 		rate = vclk->min_freq;
 
 	return rate;
@@ -344,6 +359,13 @@ int vclk_get_rate_table(unsigned int id, unsigned long *table)
 	vclk = cmucal_get_node(id);
 	if (!vclk || !IS_VCLK(vclk->id))
 		return 0;
+
+	if (g3d_local_is_vclk(vclk)) {
+		for (i = 0; i < g3d_local_get_level_num(); i++)
+			table[i] = g3d_local_get_freq(i);
+		return g3d_local_get_level_num();
+	}
+
 	if (vclk->lut) {
 		for (i = 0; i < vclk->num_rates; i++)
 			table[i] = vclk->lut[i].rate;
@@ -391,6 +413,9 @@ unsigned int vclk_get_boot_freq(unsigned int id)
 	if (!vclk || !(IS_DFS_VCLK(vclk->id) || IS_ACPM_VCLK(vclk->id)))
 		return rate;
 
+	if (g3d_local_is_vclk(vclk))
+		return G3D_LOCAL_BOOT_CLOCK_KHZ;
+
 	if (vclk->boot_freq)
 		rate = vclk->boot_freq;
 	else
@@ -407,6 +432,9 @@ unsigned int vclk_get_resume_freq(unsigned int id)
 	vclk = cmucal_get_node(id);
 	if (!vclk || !(IS_DFS_VCLK(vclk->id) || IS_ACPM_VCLK(vclk->id)))
 		return rate;
+
+	if (g3d_local_is_vclk(vclk))
+		return G3D_LOCAL_BOOT_CLOCK_KHZ;
 
 	if (vclk->resume_freq)
 		rate = vclk->resume_freq;
