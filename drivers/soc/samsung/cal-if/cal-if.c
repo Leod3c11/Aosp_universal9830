@@ -2,6 +2,7 @@
 #include <linux/debug-snapshot.h>
 #include <soc/samsung/ect_parser.h>
 #include <soc/samsung/cal-if.h>
+#include <soc/samsung/g3d_local_dvfs.h>
 #ifdef CONFIG_EXYNOS9820_BTS
 #include <soc/samsung/bts.h>
 #endif
@@ -16,6 +17,7 @@
 #include "acpm_dvfs.h"
 #include "fvmap.h"
 #include "asv.h"
+#include "exynos9830/cmucal-node.h"
 
 #include "pmucal_system.h"
 #include "pmucal_local.h"
@@ -60,6 +62,23 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 	int ret;
 
 	if (IS_ACPM_VCLK(id)) {
+		if (g3d_local_is_g3d_id(id) && g3d_local_is_oc_freq(rate)) {
+			unsigned long pll_hz = g3d_local_get_pll_hz(rate);
+			int margin_uv = g3d_local_get_margin_uv(rate);
+
+			ret = exynos_acpm_set_rate(GET_IDX(id), G3D_LOCAL_OC_BASE_CLOCK_KHZ);
+			if (!ret) {
+				exynos_acpm_set_volt_margin(id, margin_uv);
+				ret = vclk_set_rate(PLL_G3D, pll_hz);
+			}
+			if (!ret) {
+				vclk = cmucal_get_node(id);
+				if (vclk)
+					vclk->vrate = (unsigned int)rate;
+			}
+			return ret;
+		}
+
 		if (cal_check_hiu_dvfs_id && cal_check_hiu_dvfs_id(id))
 			ret = exynos_hiu_set_freq(id, rate);
 		else
@@ -75,7 +94,6 @@ int cal_dfs_set_rate(unsigned int id, unsigned long rate)
 
 	return ret;
 }
-
 int cal_dfs_set_rate_switch(unsigned int id, unsigned long switch_rate)
 {
 	int ret = 0;
