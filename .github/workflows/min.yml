@@ -1,0 +1,43 @@
+name: Build
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache Clang
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/toolchain/clang-r416183b
+          key: clang-r416183b-linux-x86
+
+      - name: Download Toolchain
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ${{ github.workspace }}/toolchain/clang-r416183b
+          curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/428d18d9732aa7ebfcaed87a582d86155db878d4/clang-r416183b.tar.gz" | tar -C ${{ github.workspace }}/toolchain/clang-r416183b -xz
+
+      - name: Setup AnyKernel3
+        run: git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+          
+      - name: Build Kernel
+        run: |
+          # Certifique-se que o script tem permissão de execução
+          chmod +x build_kernel.sh
+          ./build_kernel.sh
+
+      - name: Package Kernel
+        run: bash package_kernel.sh
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: r8s-Kernel-Build
+          path: r8s-Kernel3.zip
+          
